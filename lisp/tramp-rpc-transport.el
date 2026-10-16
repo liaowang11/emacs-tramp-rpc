@@ -590,15 +590,20 @@ or `setenv' (e.g. magit sets GIT_INDEX_FILE for temp-index operations).
 These additions/changes land in `process-environment' but are not forwarded
 by `tramp-rpc-handle-process-file' unless we explicitly extract them.
 
-Compares the current `process-environment' against the toplevel default.
 Entries that are only present in the current dynamic scope (e.g. added
 by `with-environment-variables') are returned as an alist of
-\(NAME . VALUE) pairs."
-  (let ((toplevel (default-toplevel-value 'process-environment))
-        (env nil))
+\(NAME . VALUE) pairs.  Like `tramp-sh', entries that
+`tramp-local-environment-variable-p' reports as local are skipped.  That
+covers the toplevel default and, on Emacs 31, a buffer-local
+`process-environment' such as the one envrc sets for a local project,
+whose PATH and other paths do not exist on the remote host."
+  (let ((env nil))
     (dolist (elt process-environment)
       (when (and (stringp elt)
-                 (not (member elt toplevel))
+                 (not (if (fboundp 'tramp-local-environment-variable-p)
+                          (tramp-local-environment-variable-p elt)
+                        (member elt (default-toplevel-value
+                                     'process-environment))))
                  (string-match "\\`\\([^=]+\\)=\\(.*\\)\\'" elt))
         (push (cons (match-string 1 elt) (match-string 2 elt)) env)))
     (nreverse env)))
