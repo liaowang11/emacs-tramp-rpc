@@ -8369,6 +8369,29 @@ discard it for being unreadable."
                    ("B" . "direnv")
                    ("GIT_INDEX_FILE" . "/tmp/index")))))
 
+(ert-deftest tramp-rpc-mock-test-caller-environment-skips-buffer-local ()
+  "Test a buffer-local `process-environment' is not forwarded.
+Packages such as envrc give a buffer its own `process-environment' for the
+local machine.  Like `tramp-sh', only dynamic bindings are caller overrides."
+  (skip-unless tramp-rpc-mock-test--tramp-rpc-loaded)
+  (skip-unless (fboundp 'buffer-local-toplevel-value))
+  (with-temp-buffer
+    (setq-local process-environment
+                (append '("PATH=/local/devenv/bin" "DEVELOPER_DIR=/local/sdk")
+                        (default-toplevel-value 'process-environment)))
+    (should-not (tramp-rpc--caller-environment))
+    (with-environment-variables (("GIT_INDEX_FILE" "/tmp/index"))
+      (should (equal (tramp-rpc--caller-environment)
+                     '(("GIT_INDEX_FILE" . "/tmp/index")))))))
+
+(ert-deftest tramp-rpc-mock-test-caller-environment-keeps-dynamic-bindings ()
+  "Test dynamically bound variables are forwarded as caller overrides."
+  (skip-unless tramp-rpc-mock-test--tramp-rpc-loaded)
+  (with-temp-buffer
+    (with-environment-variables (("GIT_INDEX_FILE" "/tmp/index"))
+      (should (equal (tramp-rpc--caller-environment)
+                     '(("GIT_INDEX_FILE" . "/tmp/index")))))))
+
 (ert-deftest tramp-rpc-mock-test-tramp-remote-process-environment-to-alist ()
   "Test conversion of dynamic `tramp-remote-process-environment' entries."
   (skip-unless tramp-rpc-mock-test--tramp-rpc-loaded)
