@@ -101,9 +101,8 @@ impl FilteredWatcher {
 
     fn unwatch(&mut self, path: &Path) -> Result<(), notify::Error> {
         if let Some(dirs) = self.recursive_roots.remove(path) {
-            for p in &dirs {
-                self.remove_path_watch_best_effort(p);
-            }
+            let dirs: Vec<_> = dirs.into_iter().collect();
+            self.remove_path_watches_best_effort(&dirs);
             Ok(())
         } else if self.direct_watches.contains(path) {
             self.remove_path_watch(path)?;
@@ -187,29 +186,72 @@ impl FilteredWatcher {
         let to_remove: Vec<_> = current.difference(&next).cloned().collect();
         let to_add: Vec<_> = next.difference(&current).cloned().collect();
         let mut applied = current;
-        let mut added: Vec<PathBuf> = Vec::new();
 
         // Remove first so rename old -> new cannot reuse old's descriptor.
+        self.remove_path_watches_best_effort(&to_remove);
         for dir in &to_remove {
-            self.remove_path_watch_best_effort(dir);
             applied.remove(dir);
         }
 
-        for dir in &to_add {
-            if let Err(err) = self.add_path_watch(dir) {
-                for added_dir in &added {
-                    self.remove_path_watch_best_effort(added_dir);
-                    applied.remove(added_dir);
-                }
-                self.recursive_roots.insert(root.to_path_buf(), applied);
-                return Err(err);
-            }
-            added.push(dir.clone());
-            applied.insert(dir.clone());
+        if let Err(err) = self.add_path_watches(&to_add) {
+            self.recursive_roots.insert(root.to_path_buf(), applied);
+            return Err(err);
         }
 
         self.recursive_roots.insert(root.to_path_buf(), next);
         Ok(())
+    }
+
+    /// Add a backend watch for each of PATHS in one batch, or for none.
+    ///
+    /// FSEvents restarts its stream for every `watch` call and re-registers
+    /// every path each time, so one call per directory is quadratic.
+    /// `paths_mut` restarts it once.
+    fn add_path_watches(&mut self, paths: &[PathBuf]) -> Result<(), notify::Error> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut batch = self.inner.paths_mut();
+        for (index, path) in paths.iter().enumerate() {
+            if let Err(err) = batch.add(path, RecursiveMode::NonRecursive) {
+                // Paths another owner already counts stay registered.
+                for added in &paths[..index] {
+                    if !self.path_watch_counts.contains_key(added) {
+                        let _ = batch.remove(added);
+                    }
+                }
+                let _ = batch.commit();
+                return Err(err);
+            }
+        }
+        batch.commit()?;
+        for path in paths {
+            *self.path_watch_counts.entry(path.clone()).or_insert(0) += 1;
+        }
+        Ok(())
+    }
+
+    /// Teardown variant: drop logical ownership even if backend unwatch fails.
+    fn remove_path_watches_best_effort(&mut self, paths: &[PathBuf]) {
+        let mut to_unwatch = Vec::new();
+        for path in paths {
+            match self.path_watch_counts.get_mut(path) {
+                Some(count) if *count > 1 => *count -= 1,
+                Some(_) => {
+                    self.path_watch_counts.remove(path);
+                    to_unwatch.push(path);
+                }
+                None => to_unwatch.push(path),
+            }
+        }
+        if to_unwatch.is_empty() {
+            return;
+        }
+        let mut batch = self.inner.paths_mut();
+        for path in to_unwatch {
+            let _ = batch.remove(path);
+        }
+        let _ = batch.commit();
     }
 
     fn add_path_watch(&mut self, path: &Path) -> Result<(), notify::Error> {
@@ -257,24 +299,6 @@ impl FilteredWatcher {
                 Ok(())
             }
             None => self.inner.unwatch(path),
-        }
-    }
-
-    /// Teardown variant: drop logical ownership even if backend unwatch fails.
-    fn remove_path_watch_best_effort(&mut self, path: &Path) {
-        match self.path_watch_counts.get(path).copied() {
-            Some(count) if count > 1 => {
-                if let Some(count) = self.path_watch_counts.get_mut(path) {
-                    *count -= 1;
-                }
-            }
-            Some(_) => {
-                let _ = self.inner.unwatch(path);
-                self.path_watch_counts.remove(path);
-            }
-            None => {
-                let _ = self.inner.unwatch(path);
-            }
         }
     }
 
