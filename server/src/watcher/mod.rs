@@ -199,9 +199,8 @@ impl FilteredWatcher {
 
     fn unwatch(&mut self, path: &Path) -> Result<(), notify::Error> {
         if let Some(dirs) = self.recursive_roots.remove(path) {
-            for p in &dirs {
-                self.remove_path_watch_best_effort(p);
-            }
+            let dirs: Vec<_> = dirs.into_iter().collect();
+            self.remove_path_watches_best_effort(&dirs);
             Ok(())
         } else if self.direct_watches.contains(path) {
             self.remove_path_watch(path)?;
@@ -260,7 +259,7 @@ impl FilteredWatcher {
             // live watch that is gone.
             if self.rearm_existing_watch(canonical).is_err() {
                 self.direct_watches.remove(canonical);
-                self.remove_path_watch_best_effort(canonical);
+                self.remove_path_watches_best_effort(&[canonical.to_path_buf()]);
             }
             return Err(err);
         }
@@ -350,38 +349,90 @@ impl FilteredWatcher {
         let to_remove: Vec<_> = current.difference(&next).cloned().collect();
         let to_add: Vec<_> = next.difference(&current).cloned().collect();
         let mut applied = current;
-        let mut added: Vec<PathBuf> = Vec::new();
 
         // Remove first so rename old -> new cannot reuse old's descriptor.
+        self.remove_path_watches_best_effort(&to_remove);
         for dir in &to_remove {
-            self.remove_path_watch_best_effort(dir);
             applied.remove(dir);
         }
 
-        for dir in &to_add {
-            match self.add_path_watch(dir) {
-                Ok(()) => {
-                    added.push(dir.clone());
-                    applied.insert(dir.clone());
-                }
-                Err(err) if skip_transient_missing && dir != root && is_not_found_error(&err) => {
-                    // Subdirectory vanished between scan and add_watch; keep
-                    // applying the rest of the refresh instead of rolling back.
-                    continue;
-                }
-                Err(err) => {
-                    for added_dir in &added {
-                        self.remove_path_watch_best_effort(added_dir);
-                        applied.remove(added_dir);
-                    }
-                    self.recursive_roots.insert(root.to_path_buf(), applied);
-                    return Err(err);
-                }
+        // A subdirectory that vanished between scan and add_watch is skipped on
+        // a refresh instead of rolling back the rest of it.
+        match self.add_path_watches(&to_add, |dir, err| {
+            skip_transient_missing && dir != root && is_not_found_error(err)
+        }) {
+            Ok(added) => applied.extend(added),
+            Err(err) => {
+                self.recursive_roots.insert(root.to_path_buf(), applied);
+                return Err(err);
             }
         }
 
         self.recursive_roots.insert(root.to_path_buf(), applied);
         Ok(())
+    }
+
+    /// Add a backend watch for each of PATHS in one batch, or for none.
+    ///
+    /// FSEvents restarts its stream for every `watch` call and re-registers
+    /// every path each time, so one call per directory is quadratic.
+    /// `paths_mut` restarts it once.
+    /// A path whose error `skip` accepts is left out instead of failing the
+    /// batch.  Returns the paths that were added.
+    fn add_path_watches(
+        &mut self,
+        paths: &[PathBuf],
+        skip: impl Fn(&Path, &notify::Error) -> bool,
+    ) -> Result<Vec<PathBuf>, notify::Error> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut added: Vec<PathBuf> = Vec::with_capacity(paths.len());
+        let mut batch = self.inner.paths_mut();
+        for path in paths {
+            match batch.add(path, RecursiveMode::NonRecursive) {
+                Ok(()) => added.push(path.clone()),
+                Err(err) if skip(path, &err) => continue,
+                Err(err) => {
+                    // Paths another owner already counts stay registered.
+                    for added in &added {
+                        if !self.path_watch_counts.contains_key(added) {
+                            let _ = batch.remove(added);
+                        }
+                    }
+                    let _ = batch.commit();
+                    return Err(err);
+                }
+            }
+        }
+        batch.commit()?;
+        for path in &added {
+            *self.path_watch_counts.entry(path.clone()).or_insert(0) += 1;
+        }
+        Ok(added)
+    }
+
+    /// Teardown variant: drop logical ownership even if backend unwatch fails.
+    fn remove_path_watches_best_effort(&mut self, paths: &[PathBuf]) {
+        let mut to_unwatch = Vec::new();
+        for path in paths {
+            match self.path_watch_counts.get_mut(path) {
+                Some(count) if *count > 1 => *count -= 1,
+                Some(_) => {
+                    self.path_watch_counts.remove(path);
+                    to_unwatch.push(path);
+                }
+                None => to_unwatch.push(path),
+            }
+        }
+        if to_unwatch.is_empty() {
+            return;
+        }
+        let mut batch = self.inner.paths_mut();
+        for path in to_unwatch {
+            let _ = batch.remove(path);
+        }
+        let _ = batch.commit();
     }
 
     fn add_path_watch(&mut self, path: &Path) -> Result<(), notify::Error> {
@@ -429,24 +480,6 @@ impl FilteredWatcher {
                 Ok(())
             }
             None => self.inner.unwatch(path),
-        }
-    }
-
-    /// Teardown variant: drop logical ownership even if backend unwatch fails.
-    fn remove_path_watch_best_effort(&mut self, path: &Path) {
-        match self.path_watch_counts.get(path).copied() {
-            Some(count) if count > 1 => {
-                if let Some(count) = self.path_watch_counts.get_mut(path) {
-                    *count -= 1;
-                }
-            }
-            Some(_) => {
-                let _ = self.inner.unwatch(path);
-                self.path_watch_counts.remove(path);
-            }
-            None => {
-                let _ = self.inner.unwatch(path);
-            }
         }
     }
 
