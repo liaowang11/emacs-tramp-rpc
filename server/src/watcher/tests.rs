@@ -1048,3 +1048,57 @@ fn test_recursive_unwatch_preserves_overlapping_recursive_watch() {
     watcher.unwatch(&sub).unwrap();
     assert!(!watcher.path_watch_counts.contains_key(&sub));
 }
+
+#[test]
+fn test_batched_recursive_watch_keeps_shared_ownership() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let shared = root.join("shared");
+    let missing = root.join("missing");
+    fs::create_dir_all(&shared).unwrap();
+    let mut watcher = FilteredWatcher::new(|_: notify::Result<Event>| {}).unwrap();
+
+    watcher.watch(&shared, RecursiveMode::NonRecursive).unwrap();
+    watcher.watch(&root, RecursiveMode::Recursive).unwrap();
+    assert_eq!(watcher.path_watch_counts.get(&root), Some(&1));
+    assert_eq!(watcher.path_watch_counts.get(&shared), Some(&2));
+
+    // A failed batch leaves every count as it was.
+    assert!(
+        watcher
+            .add_path_watches(&[shared.clone(), missing.clone()])
+            .is_err()
+    );
+    assert_eq!(watcher.path_watch_counts.get(&shared), Some(&2));
+    assert!(!watcher.path_watch_counts.contains_key(&missing));
+
+    // Dropping the recursive root keeps the direct watch on `shared`.
+    watcher.unwatch(&root).unwrap();
+    assert!(!watcher.path_watch_counts.contains_key(&root));
+    assert_eq!(watcher.path_watch_counts.get(&shared), Some(&1));
+}
+
+/// Time one recursive watch of `TRAMP_RPC_WATCH_BENCH_ROOT`.
+/// Run with `cargo test -p tramp-rpc-server --release bench_recursive_watch -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bench_recursive_watch() {
+    let Ok(root) = std::env::var("TRAMP_RPC_WATCH_BENCH_ROOT") else {
+        eprintln!("TRAMP_RPC_WATCH_BENCH_ROOT is unset");
+        return;
+    };
+    let root = PathBuf::from(root).canonicalize().unwrap();
+    let mut watcher = FilteredWatcher::new(|_: notify::Result<Event>| {}).unwrap();
+    let started = std::time::Instant::now();
+    let dirs = FilteredWatcher::collect_recursive_dirs(&root).len();
+    let scanned = started.elapsed();
+    watcher.watch(&root, RecursiveMode::Recursive).unwrap();
+    let watched = started.elapsed();
+    watcher.unwatch(&root).unwrap();
+    eprintln!(
+        "backend={:?} dirs={dirs} scan={scanned:?} watch={:?} unwatch={:?}",
+        RecommendedWatcher::kind(),
+        watched - scanned,
+        started.elapsed() - watched
+    );
+}
