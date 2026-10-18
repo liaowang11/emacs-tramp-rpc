@@ -26,7 +26,8 @@ libc = "0.2"
 # For PTY support (term feature includes pty module)
 nix = { version = "0.31", features = ["term", "process", "signal", "fs", "user", "hostname"] }
 
-# For filesystem watching (inotify on Linux, kqueue on macOS)
+# For filesystem watching (inotify on Linux, FSEvents on macOS; kqueue with
+# the macos-kqueue feature)
 notify = "8.2"
 
 # For Git-aware recursive watch discovery.
@@ -41,3 +42,7 @@ rustix-libc-wrappers = { version = "0.1", features = ["process"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+# Use kqueue instead of FSEvents on macOS.
+macos-kqueue = ["notify/macos_kqueue"]
