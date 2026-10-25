@@ -63,7 +63,9 @@
   ;; Non-nil once the transport sentinel wrapper has been installed.
   sentinel-installed
   ;; Non-nil while a dead-connection probe of this generation runs.
-  probing)
+  probing
+  ;; Total bytes received on PROCESS, as evidence of a live transport.
+  (received-bytes 0))
 
 (defun tramp-rpc--connection-transport (connection)
   "Return the transport process of CONNECTION, or nil when CONNECTION is nil.

@@ -159,6 +159,28 @@ SPEC is (PROCESS BUFFER [CONNECTION]); CONNECTION defaults to `connection'."
         (should-not (tramp-rpc-connection-probing connection))
         (should-not (tramp-rpc-connection-probing other))))))
 
+(ert-deftest tramp-rpc-mock-test-request-probe-keeps-generation-receiving-input ()
+  "A probe timing out while frames still arrive keeps the generation.
+Responses share one ordered stream, so a large in-flight reply can delay
+the ping past its deadline on a live transport."
+  (tramp-rpc-mock-test-request--with-connection (process buffer)
+    (let ((vec (tramp-rpc-mock-test-request--vec))
+          invalidated)
+      (with-current-buffer buffer
+        (set-buffer-multibyte nil)
+        (set-marker (mark-marker) (point-min)))
+      (cl-letf (((symbol-function 'tramp-rpc--call-with-timeout)
+                 (lambda (&rest _)
+                   ;; Part of a 10-byte frame arrives before the deadline.
+                   (tramp-rpc--connection-filter
+                    process (unibyte-string 0 0 0 10 1 2))
+                   (signal 'remote-file-error '("ping timeout"))))
+                ((symbol-function 'tramp-rpc--invalidate-timed-out-connection)
+                 (lambda (transport _vec _event) (setq invalidated transport))))
+        (tramp-rpc--probe-live-connection vec connection process "test"))
+      (should-not invalidated)
+      (should-not (tramp-rpc-connection-probing connection)))))
+
 (ert-deftest tramp-rpc-mock-test-stderr-buffer-is-bounded ()
   "Long-lived SSH stderr output must not grow without bound."
   (tramp-rpc-mock-test-request--with-connection (process buffer)

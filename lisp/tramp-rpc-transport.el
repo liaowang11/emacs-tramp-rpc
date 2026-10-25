@@ -1703,6 +1703,8 @@ Uses length-prefixed binary framing: <4-byte BE length><msgpack payload>."
         ;; Append output to buffer
         (goto-char (point-max))
         (insert output)
+        (when-let* ((conn (tramp-rpc--process-connection process)))
+          (cl-incf (tramp-rpc-connection-received-bytes conn) (length output)))
         (tramp-rpc--debug "FILTER received %d bytes, buffer-size=%d"
                           (length output) (buffer-size))
         ;; Process complete messages
@@ -1852,17 +1854,27 @@ on CONN, which must not start another probe, but a timeout on another
 generation probes that generation independently."
   (unless (tramp-rpc-connection-probing conn)
     (tramp-rpc--debug "PROBE after timeout on method=%s" method)
-    (condition-case _err
-        (unwind-protect
-            (progn
-              (setf (tramp-rpc-connection-probing conn) t)
-              (tramp-rpc--call-with-timeout vec "system.ping" nil 10 0.01 conn))
-          (setf (tramp-rpc-connection-probing conn) nil))
-      (remote-file-error
-       (tramp-rpc--debug "PROBE failed; invalidating connection for method=%s" method)
-       (tramp-rpc--invalidate-timed-out-connection
-        process vec
-        (format "dead connection detected after RPC timeout (method=%s)\n" method))))))
+    (let ((received (tramp-rpc-connection-received-bytes conn)))
+      (condition-case _err
+          (unwind-protect
+              (progn
+                (setf (tramp-rpc-connection-probing conn) t)
+                (tramp-rpc--call-with-timeout vec "system.ping" nil 10 0.01 conn))
+            (setf (tramp-rpc-connection-probing conn) nil))
+        (remote-file-error
+         ;; Responses share one ordered stream, so a large in-flight reply
+         ;; can hold the ping back on a live transport.  Input arriving
+         ;; during the probe shows the tunnel and server are still alive.
+         (if (and (process-live-p process)
+                  (> (tramp-rpc-connection-received-bytes conn) received))
+             (tramp-rpc--debug
+              "PROBE timed out while input arrived; keeping connection for method=%s"
+              method)
+           (tramp-rpc--debug "PROBE failed; invalidating connection for method=%s" method)
+           (tramp-rpc--invalidate-timed-out-connection
+            process vec
+            (format "dead connection detected after RPC timeout (method=%s)\n"
+                    method))))))))
 
 (defun tramp-rpc--find-response-by-id (conn expected-id)
   "Check generation CONN's pending responses for EXPECTED-ID.
