@@ -463,6 +463,35 @@ SPEC is (PROCESS BUFFER [CONNECTION]); CONNECTION defaults to `connection'."
       (should-not (tramp-rpc--get-connection vec))
       (should (equal vec controlmaster-cleaned)))))
 
+(ert-deftest tramp-rpc-mock-test-request-timeout-cleanup-survives-controlmaster-quit ()
+  "A quit during ControlMaster teardown still finishes generation cleanup.
+Otherwise the claimed generation stays half-retired: detached, yet its
+transport and relays live on."
+  (tramp-rpc-mock-test-request--with-connection (process buffer)
+    (let* ((vec (tramp-rpc-mock-test-request--vec))
+           (connection connection)
+           (tramp-rpc--connections (make-hash-table :test 'equal))
+           quit-seen)
+      (puthash (tramp-rpc--connection-key vec) connection tramp-rpc--connections)
+      (cl-letf (((symbol-function 'tramp-rpc--cleanup-async-processes) #'ignore)
+                ((symbol-function 'tramp-rpc--cleanup-pty-processes) #'ignore)
+                ((symbol-function 'tramp-rpc--cleanup-watches-for-connection) #'ignore)
+                ((symbol-function 'tramp-rpc--cleanup-file-notify-for-connection) #'ignore)
+                ((symbol-function 'tramp-rpc--clear-direnv-cache) #'ignore)
+                ((symbol-function 'tramp-rpc--clear-file-caches-for-connection) #'ignore)
+                ((symbol-function 'tramp-rpc-magit--clear-status-cache-for-connection) #'ignore)
+                ((symbol-function 'tramp-rpc--cleanup-controlmaster-unlocked)
+                 (lambda (_vec) (signal 'quit nil))))
+        (condition-case nil
+            (tramp-rpc--invalidate-timed-out-connection
+             process vec "test timeout\n")
+          (quit (setq quit-seen t))))
+      (should quit-seen)
+      (should-not (process-live-p process))
+      (should-not (tramp-rpc--get-connection vec))
+      (should (tramp-rpc-connection-transport-cleaned connection))
+      (should (tramp-rpc-connection-transport-dead connection)))))
+
 (ert-deftest tramp-rpc-mock-test-request-wait-timeout-preserves-managed-processes ()
   "A completed request write timing out must not retire shared processes."
   (tramp-rpc-mock-test-request--with-connection (process buffer)

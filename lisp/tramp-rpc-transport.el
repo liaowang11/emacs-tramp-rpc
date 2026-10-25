@@ -1550,33 +1550,39 @@ live connection shares VEC's ControlMaster socket."
 EVENT describes the timed-out operation for transport diagnostics.  A timed-out
 stream cannot safely be reused because its response may still arrive later and
 the underlying SSH ControlMaster may be half-open after a network interruption."
-  (let ((claimed
-         (with-mutex (tramp-rpc--connection-lifecycle-mutex vec)
-           (prog1 (tramp-rpc--claim-connection-generation
-                   process vec event :timeout)
-             ;; Tear down the ControlMaster while holding the lifecycle mutex
-             ;; and only when no replacement connection is already current, so
-             ;; a reconnect cannot reuse the half-open socket between removal
-             ;; and teardown.
-             (let ((current (tramp-rpc--get-connection vec)))
-               (when (and (or (null current)
-                              (eq process (tramp-rpc-connection-process current)))
-                          (not (tramp-rpc--controlmaster-socket-shared-p
-                                vec process)))
-                 (tramp-rpc--cleanup-controlmaster-unlocked vec)))))))
-    (when claimed
-      (let ((deferred (tramp-rpc--finish-connection-generation-cleanup
-                       process vec event claimed nil t)))
-        (when (process-live-p process)
-          (delete-process process))
-        ;; Invoke the generation's callbacks only after the protected lifecycle
-        ;; transition has completed and the transport is fully detached.
-        (dolist (callback (cdr deferred))
-          (condition-case callback-error
-              (funcall callback (car deferred))
-            (error
-             (tramp-rpc--debug "transport cleanup callback failed: %S"
-                               callback-error))))))))
+  (let (claimed)
+    ;; Once claimed, the generation is detached and cannot be claimed again,
+    ;; so a quit or error in the ControlMaster teardown must not skip the
+    ;; final cleanup.  Otherwise the transport and its relays live on
+    ;; unreachable, with every write refused as replaced.
+    (unwind-protect
+        (with-mutex (tramp-rpc--connection-lifecycle-mutex vec)
+          (setq claimed (tramp-rpc--claim-connection-generation
+                         process vec event :timeout))
+          ;; Tear down the ControlMaster while holding the lifecycle mutex
+          ;; and only when no replacement connection is already current, so
+          ;; a reconnect cannot reuse the half-open socket between removal
+          ;; and teardown.
+          (let ((current (tramp-rpc--get-connection vec)))
+            (when (and (or (null current)
+                           (eq process (tramp-rpc-connection-process current)))
+                       (not (tramp-rpc--controlmaster-socket-shared-p
+                             vec process)))
+              (tramp-rpc--cleanup-controlmaster-unlocked vec))))
+      (when claimed
+        (let ((deferred (tramp-rpc--finish-connection-generation-cleanup
+                         process vec event claimed nil t)))
+          (when (process-live-p process)
+            (delete-process process))
+          ;; Invoke the generation's callbacks only after the protected
+          ;; lifecycle transition has completed and the transport is fully
+          ;; detached.
+          (dolist (callback (cdr deferred))
+            (condition-case callback-error
+                (funcall callback (car deferred))
+              (error
+               (tramp-rpc--debug "transport cleanup callback failed: %S"
+                                 callback-error)))))))))
 
 (defun tramp-rpc--invalidate-interrupted-connection (process vec event)
   "Retire PROCESS after an interrupted synchronous request on VEC.
