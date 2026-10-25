@@ -69,7 +69,9 @@
   (metadata-epoch 0)
   ;; Lazily allocated by tramp-rpc-environment.el.  Replacing this object
   ;; clears caches without letting in-flight probes refill the new state.
-  environment)
+  environment
+  ;; Total bytes received on PROCESS, as evidence of a live transport.
+  (received-bytes 0))
 
 (defun tramp-rpc--connection-transport (connection)
   "Return the transport process of CONNECTION, or nil when CONNECTION is nil.
