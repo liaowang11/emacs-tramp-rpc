@@ -1593,7 +1593,7 @@ async fn pty_foreground_unless_leader_skips_idle_shell() {
     let start = start_pty(crate::msgpack_map! {
         "cmd" => "python3",
         "args" => Value::Array(vec!["-u".into(), "-c".into(),
-            "import signal,time; signal.signal(signal.SIGINT,lambda *_: print('interrupted')); print('ready'); time.sleep(30)".into()]),
+            "import signal,time; signal.signal(signal.SIGINT,lambda *_: print('interrupted')); print('ready',end='',flush=True); time.sleep(30)".into()]),
     }).await.unwrap();
     let pid = map_get(&start, "pid").and_then(Value::as_u64).unwrap() as u32;
     let ready = pty_output_until(pid, b"ready").await;
@@ -2057,7 +2057,8 @@ async fn pty_read_removes_entry_after_terminal_eof() {
     let pid = map_get(&start, "pid").and_then(Value::as_u64).unwrap() as u32;
     let mut output = Vec::new();
     let mut exited = false;
-    for _ in 0..40 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
         let read = read_pty(Value::Map(vec![
             (Value::String("pid".into()), Value::Integer(pid.into())),
             (
@@ -2074,6 +2075,10 @@ async fn pty_read_removes_entry_after_terminal_eof() {
         if exited {
             break;
         }
+        // Terminal EOF clears `pending', so the read returns at once while
+        // waitpid may still report the child alive.  Sleep instead of
+        // consuming a poll budget faster than the child can be reaped.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(exited);
     // Idle and terminal reads must return exactly the child's bytes:
@@ -2147,10 +2152,10 @@ async fn pty_read_drains_output_larger_than_max_bytes_after_exit() {
     let pid = map_get(&start, "pid").and_then(Value::as_u64).unwrap() as u32;
     let mut output = Vec::new();
     let mut exited = false;
-    // macOS TTYs hand out at most ~1 KiB per read, so draining 128 KiB
-    // takes well over a hundred reads; size the loop for that, not for
-    // Linux's larger PTY chunks.
-    for _ in 0..512 {
+    // EOF can become readable before waitpid observes the child's exit.
+    // Use a deadline instead of exhausting a fixed number of immediate reads.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
         let result = read_pty(Value::Map(vec![
             (Value::String("pid".into()), Value::Integer(pid.into())),
             (
@@ -2164,12 +2169,18 @@ async fn pty_read_drains_output_larger_than_max_bytes_after_exit() {
         ]))
         .await
         .expect("read pty output");
-        if let Some(Value::Binary(bytes)) = map_get(&result, "output") {
+        let has_output = if let Some(Value::Binary(bytes)) = map_get(&result, "output") {
             output.extend_from_slice(bytes);
-        }
+            !bytes.is_empty()
+        } else {
+            false
+        };
         exited = map_get(&result, "exited").and_then(Value::as_bool) == Some(true);
         if exited {
             break;
+        }
+        if !has_output {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
     assert!(exited);
