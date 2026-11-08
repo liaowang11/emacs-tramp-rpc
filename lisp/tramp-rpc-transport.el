@@ -1314,6 +1314,11 @@ Returns the connection plist.  Signals `remote-file-error' on failure."
                                     host revision tramp-rpc-protocol-revision))))
             (tramp-rpc--cache-system-info vec info))
 
+          ;; Direct-ssh PTYs run their program through this binary's `run'
+          ;; subcommand; see `tramp-rpc--direct-ssh-pty-runner'.
+          (tramp-rpc--set-route-connection-property
+           vec tramp-rpc--server-binary-property binary-path)
+
           ;; Set connection-local variables in the connection buffer.
           ;; Every TRAMP backend must call this after establishing the
           ;; connection so that connection-local variable profiles
@@ -2409,6 +2414,19 @@ Signals when VEC cannot be reached."
 
 (defconst tramp-rpc--system-info-property "tramp-rpc-system-info"
   "TRAMP connection property storing the cached system.info response.")
+
+(defconst tramp-rpc--server-binary-property "tramp-rpc-server-binary"
+  "TRAMP connection property storing the remote server command path.")
+
+(defun tramp-rpc--direct-ssh-pty-runner (vec)
+  "Return the server path that runs VEC's direct-ssh PTY programs, or nil.
+A server that advertises `run_command' starts the program through
+`tramp-rpc-server run --': on macOS that runs it in the user's GUI login
+session, where the login keychain is available, and elsewhere it execs the
+program in place.  Older servers return nil and the program runs directly."
+  (and (eq (alist-get 'run_command (tramp-rpc--system-info vec)) t)
+       (tramp-rpc--get-route-connection-property
+        vec tramp-rpc--server-binary-property nil)))
 
 (defcustom tramp-rpc-watcher-unavailable-ttl 30
   "TTL cap in seconds for caches when push notifications are unavailable.

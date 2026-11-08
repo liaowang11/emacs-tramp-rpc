@@ -47,6 +47,7 @@
 (declare-function tramp-rpc--cached-system-info "tramp-rpc-transport" (vec))
 (declare-function tramp-rpc--process-directory "tramp-rpc-transport" (localname))
 (declare-function tramp-rpc--sudo-ssh-user "tramp-rpc-transport" (vec))
+(declare-function tramp-rpc--direct-ssh-pty-runner "tramp-rpc-transport" (vec))
 
 ;; ============================================================================
 ;; Process tracking state
@@ -1084,6 +1085,24 @@ EVENT is the process event string."
     (tramp-rpc--call-user-sentinel-once
      process (process-get process :tramp-rpc-user-sentinel) event)))
 
+(defun tramp-rpc--direct-ssh-pty-remote-command (localname env-exports command runner)
+  "Return the shell command a direct-ssh PTY runs on the remote host.
+It changes to LOCALNAME, runs ENV-EXPORTS and execs COMMAND, a list of
+program and arguments.  When RUNNER, the remote server path, is non-nil the
+program runs through `RUNNER run --'.  RUNNER is inserted unquoted, as the
+server command is, so the remote shell expands variables such as $USER in
+it."
+  (format "cd %s && %s exec %s%s %s"
+          ;; Leave a leading "~" unquoted so the remote shell expands it.
+          (if (string-match (rx bos "~" (? (group "/" (* anychar))) eos) localname)
+              (concat "~" (when (match-beginning 1)
+                            (tramp-shell-quote-argument (match-string 1 localname))))
+            (tramp-shell-quote-argument localname))
+          env-exports
+          (if runner (concat runner " run -- ") "")
+          (tramp-shell-quote-argument (car command))
+          (mapconcat #'tramp-shell-quote-argument (cdr command) " ")))
+
 (defun tramp-rpc--make-direct-ssh-pty-process (vec name buffer command coding noquery
                                                     filter sentinel localname &optional direnv-env)
   "Create a PTY process using direct SSH connection.
@@ -1098,8 +1117,6 @@ DIRENV-ENV is an optional alist of environment variables from direnv."
   (let* ((host (tramp-file-name-host vec))
          (user (tramp-file-name-user vec))
          (port (tramp-rpc--port-to-string (tramp-file-name-port vec)))
-         (program (car command))
-         (program-args (cdr command))
          ;; Build environment exports for the remote command
          (env-exports (mapconcat
                        (lambda (pair)
@@ -1110,18 +1127,9 @@ DIRENV-ENV is an optional alist of environment variables from direnv."
                                `(("TERM" . ,(or (getenv "TERM") "xterm-256color"))))
                        " "))
          ;; Build the remote command - cd to dir, export env, exec program
-         ;; Leave a leading "~" unquoted so the remote shell expands it.
-         (remote-cmd (format "cd %s && %s exec %s %s"
-                             (if (string-match
-                                  (rx bos "~" (? (group "/" (* anychar))) eos)
-                                  localname)
-                                 (concat "~" (when (match-beginning 1)
-                                               (tramp-shell-quote-argument
-                                                (match-string 1 localname))))
-                               (tramp-shell-quote-argument localname))
-                             env-exports
-                              (tramp-shell-quote-argument program)
-                              (mapconcat #'tramp-shell-quote-argument program-args " ")))
+         (remote-cmd (tramp-rpc--direct-ssh-pty-remote-command
+                      localname env-exports command
+                      (tramp-rpc--direct-ssh-pty-runner vec)))
          (proxyjump (tramp-rpc--hops-to-proxyjump vec))
          ;; Build SSH arguments for direct PTY connection
          (ssh-args (append
