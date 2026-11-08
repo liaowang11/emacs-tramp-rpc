@@ -544,6 +544,34 @@ explicitly rather than risk overwriting a concurrently created destination.
   because the frame may be incomplete, and RPC timeouts and transport failures
   keep tearing the connection down.
 
+** macOS GUI session (login keychain)
+
+sshd starts every command in its own security session, where the macOS login
+keychain is locked: credential helpers, ~gh~, and tools that keep an OAuth
+login in the keychain fail over SSH.  Run ~tramp-rpc-server daemon~ as a
+per-user launchd agent on the remote Mac:
+
+#+begin_src xml
+<key>ProgramArguments</key>
+<array><string>/path/to/tramp-rpc-server</string><string>daemon</string></array>
+<key>KeepAlive</key><true/>
+<key>AbandonProcessGroup</key><true/>
+#+end_src
+
+The daemon listens on =~/Library/Application Support/tramp-rpc/gui.sock=.  A
+server started over SSH hands its stdin, stdout, and stderr to the daemon,
+which starts a fresh server in the GUI session on those same descriptors; data
+never passes through the daemon.  Every process the server runs, and every
+direct-SSH PTY (through ~tramp-rpc-server run -- PROGRAM~), then has keychain
+access.  Nothing changes on the Emacs side.
+
+Without a daemon (Linux, a Mac nobody is logged into, no agent installed), the
+server serves the connection itself and ~run~ execs the program in place.
+Restarting the daemon does not affect running servers.
+
+~tramp-rpc-server run -- PROGRAM ARGS...~ is also usable on its own, for
+example as the remote command of a separate SSH channel.
+
 * Troubleshooting
 
 ** Check deployment status
