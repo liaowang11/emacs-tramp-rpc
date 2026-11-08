@@ -912,6 +912,9 @@ wrappers and dynamic loaders can print the same text for unrelated failures."
        (memq (process-exit-status process) '(126 127))))
 
 
+(defconst tramp-rpc--server-binary-property "tramp-rpc-server-binary"
+  "TRAMP connection property storing the remote server command path.")
+
 (defun tramp-rpc--start-server-process (vec binary-path &optional sudo-password)
   "Start the RPC server on VEC at BINARY-PATH and verify it responds.
 BINARY-PATH is the remote localname of the server binary (may contain ~).
@@ -1975,9 +1978,6 @@ This is more efficient when the server has async support."
 
 (defconst tramp-rpc--system-info-property "tramp-rpc-system-info"
   "TRAMP connection property storing the cached system.info response.")
-
-(defconst tramp-rpc--server-binary-property "tramp-rpc-server-binary"
-  "TRAMP connection property storing the remote server command path.")
 
 (defun tramp-rpc--direct-ssh-pty-runner (vec)
   "Return the server path that runs VEC's direct-ssh PTY programs, or nil.
