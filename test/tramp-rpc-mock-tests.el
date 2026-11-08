@@ -2198,7 +2198,9 @@ Unknown type at load time."
     (cl-letf (((symbol-function 'start-process)
                (lambda (_name _buffer &rest args)
                  (setq argv args)
-                 (make-pipe-process :name "direct-pty-argv" :noquery t))))
+                 (make-pipe-process :name "direct-pty-argv" :noquery t)))
+              ;; The fork's runner would query the server's system info.
+              ((symbol-function 'tramp-rpc--direct-ssh-pty-runner) #'ignore))
       (let ((process (tramp-rpc--make-direct-ssh-pty-process
                       vec "direct-pty" nil '("true") nil t nil nil "/")))
         (delete-process process)))
@@ -8778,6 +8780,8 @@ TRAMP's container completion runs commands from such a directory."
           (cl-letf (((symbol-function 'tramp-rpc-handle-expand-file-name)
                      (lambda (name &optional _dir) name))
                     ((symbol-function 'tramp-rpc--process-environment) #'ignore)
+                    ;; No server to ask for `run_command': run directly.
+                    ((symbol-function 'tramp-rpc--direct-ssh-pty-runner) #'ignore)
                     ((symbol-function 'start-process)
                      (lambda (name buffer _program &rest args)
                        (setq remote-command (car (last args)))
@@ -9359,6 +9363,41 @@ Becoming root needs no password here, but becoming deploy does."
                    vec "sudo-pty" nil '("id") nil t nil nil "/root/" nil)
                   'rpc-pty))
       (should rpc-called))))
+
+(ert-deftest tramp-rpc-mock-test-direct-ssh-pty-command-without-runner ()
+  "Without a runner the direct-ssh PTY execs the program itself."
+  (should (equal (tramp-rpc--direct-ssh-pty-remote-command
+                  "/srv/my dir" "export TERM=xterm;" '("vim" "a b") nil)
+                 "cd /srv/my\\ dir && export TERM=xterm; exec vim a\\ b")))
+
+(ert-deftest tramp-rpc-mock-test-direct-ssh-pty-command-through-runner ()
+  "A runner wraps the program in `run --' and stays unquoted.
+The server path is expanded by the remote shell, like the server command,
+so a `$USER' in it must survive."
+  (should (equal (tramp-rpc--direct-ssh-pty-remote-command
+                  "/srv/" "export TERM=xterm;" '("vim" "a b")
+                  "/etc/profiles/per-user/$USER/bin/tramp-rpc-server")
+                 (concat "cd /srv/ && export TERM=xterm; exec "
+                         "/etc/profiles/per-user/$USER/bin/tramp-rpc-server"
+                         " run -- vim a\\ b"))))
+
+(ert-deftest tramp-rpc-mock-test-direct-ssh-pty-runner-needs-run-command ()
+  "Only a server that advertises `run_command' becomes the PTY runner."
+  (let ((vec (tramp-dissect-file-name "/rpc:alice@server:/srv/"))
+        (info nil))
+    (cl-letf (((symbol-function 'tramp-rpc--system-info) (lambda (_) info))
+              ((symbol-function 'tramp-rpc--get-route-connection-property)
+               (lambda (_vec property default)
+                 (if (equal property tramp-rpc--server-binary-property)
+                     "/opt/bin/tramp-rpc-server"
+                   default))))
+      (setq info '((os . "macos")))
+      (should-not (tramp-rpc--direct-ssh-pty-runner vec))
+      (setq info '((os . "macos") (run_command . :false)))
+      (should-not (tramp-rpc--direct-ssh-pty-runner vec))
+      (setq info '((os . "macos") (run_command . t)))
+      (should (equal (tramp-rpc--direct-ssh-pty-runner vec)
+                     "/opt/bin/tramp-rpc-server")))))
 
 ;;; ============================================================================
 ;;; Direnv Cache Path Normalization Tests (No server or SSH required)
