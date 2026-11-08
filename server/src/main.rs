@@ -12,6 +12,7 @@
 //! can be processed in parallel while waiting on I/O.
 
 mod access;
+mod gui;
 mod handlers;
 mod output;
 mod protocol;
@@ -610,6 +611,11 @@ async fn accept_frame<W>(
 }
 
 fn main() -> std::process::ExitCode {
+    // `run`, `daemon` and the GUI-session handoff finish here; otherwise this
+    // process serves RPC on its own stdio.
+    if let Some(code) = gui::dispatch(std::env::args_os().skip(1).collect()) {
+        return code;
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
