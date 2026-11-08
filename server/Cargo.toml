@@ -24,7 +24,7 @@ flate2 = "1.0"
 libc = "0.2"
 
 # For PTY support (term feature includes pty module)
-nix = { version = "0.31", features = ["term", "process", "signal", "fs", "user", "hostname"] }
+nix = { version = "0.31", features = ["term", "process", "signal", "fs", "user", "hostname", "socket", "uio", "event", "poll", "ioctl"] }
 
 # For filesystem watching (inotify on Linux, FSEvents on macOS; kqueue with
 # the macos-kqueue feature)
