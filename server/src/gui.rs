@@ -160,6 +160,8 @@ mod imp {
     const PTY_STARTED: u8 = b'M';
     /// Daemon reply: the program could not be started; run it in place.
     const FAILED: u8 = b'E';
+    /// How long the daemon waits for a connected client's request.
+    const REQUEST_TIMEOUT_MS: u16 = 5000;
     /// Largest request the daemon reads.
     const MAX_REQUEST: u32 = 4 << 20;
     /// How long a hung-up child may take to exit before it is killed.
@@ -547,6 +549,16 @@ mod imp {
 
     /// Read a request: the 4-byte length carries the descriptors.
     fn read_request(stream: &mut UnixStream) -> Option<(Launch, Vec<OwnedFd>)> {
+        // Wait for the request outside `SPAWN`: a client that connects and
+        // sends nothing must not stall every other launch.
+        let mut ready = [PollFd::new(stream.as_fd(), PollFlags::POLLIN)];
+        match poll(&mut ready, PollTimeout::from(REQUEST_TIMEOUT_MS)) {
+            Ok(1) => {}
+            _ => return None,
+        }
+        stream
+            .set_read_timeout(Some(Duration::from_millis(REQUEST_TIMEOUT_MS.into())))
+            .ok()?;
         let mut len = [0u8; 4];
         let (n, fds) = {
             let _guard = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
@@ -562,6 +574,7 @@ mod imp {
         }
         let mut payload = vec![0u8; len as usize];
         stream.read_exact(&mut payload).ok()?;
+        stream.set_read_timeout(None).ok()?;
         Some((rmp_serde::from_slice(&payload).ok()?, fds))
     }
 
@@ -985,6 +998,31 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn a_silent_client_does_not_block_other_launches() {
+        let daemon = start_daemon();
+        // Connects and never sends a request.
+        let _silent = std::os::unix::net::UnixStream::connect(&daemon.socket).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let req = request(&["/bin/sh", "-c", "exit 5"], Path::new("/"), &[PATH], None);
+        let (tx, rx) = mpsc::channel();
+        let socket = daemon.socket.clone();
+        std::thread::spawn(move || {
+            let (in_r, _in_w) = cloexec_pipe();
+            let (_out_r, out_w) = cloexec_pipe();
+            let started = launch(
+                &socket,
+                &req,
+                Some([in_r.as_fd(), out_w.as_fd(), out_w.as_fd()]),
+            );
+            let _ = tx.send(started.map(|s| status_within(s, Duration::from_secs(5))));
+        });
+        let status = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a silent client blocked another launch");
+        assert_eq!(status, Some(5));
     }
 
     #[test]
