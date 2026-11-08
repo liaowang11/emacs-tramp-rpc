@@ -37,6 +37,9 @@ pub(super) async fn system_info() -> HandlerResult {
         "arch" => std::env::consts::ARCH,
         "watcher" => watcher_kind(),
         "watcher_available" => Value::Boolean(crate::watcher::is_active()),
+        // `tramp-rpc-server run -- PROGRAM...` exists: it runs PROGRAM in the
+        // GUI session when the daemon is up and in place otherwise.
+        "run_command" => Value::Boolean(true),
         "max_read_chunk_bytes" => io::MAX_FILE_READ_CHUNK_BYTES as u64,
         "hostname" => hostname(),
         "uid" => getuid().as_raw(),
@@ -298,6 +301,18 @@ mod tests {
             Some(default.as_os_str()),
             None
         ));
+    }
+
+    #[tokio::test]
+    async fn system_info_advertises_the_run_command() {
+        let info = system_info().await.unwrap();
+        let run = info
+            .as_map()
+            .unwrap()
+            .iter()
+            .find(|(key, _)| key.as_str() == Some("run_command"))
+            .and_then(|(_, value)| value.as_bool());
+        assert_eq!(run, Some(true));
     }
 
     #[test]
