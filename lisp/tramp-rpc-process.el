@@ -1086,7 +1086,7 @@ EVENT is the process event string."
      process (process-get process :tramp-rpc-user-sentinel) event)))
 
 (defun tramp-rpc--direct-ssh-pty-remote-command (localname env-exports command runner)
-  "Return the shell command a direct-ssh PTY runs on the remote host.
+  "Return the remote shell command for a direct-ssh PTY.
 It changes to LOCALNAME, runs ENV-EXPORTS and execs COMMAND, a list of
 program and arguments.  When RUNNER, the remote server path, is non-nil the
 program runs through `RUNNER run --'.  RUNNER is inserted unquoted, as the

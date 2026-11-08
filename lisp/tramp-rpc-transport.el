@@ -2419,7 +2419,7 @@ Signals when VEC cannot be reached."
   "TRAMP connection property storing the cached system.info response.")
 
 (defun tramp-rpc--direct-ssh-pty-runner (vec)
-  "Return the server path that runs VEC's direct-ssh PTY programs, or nil.
+  "Return the server path for VEC's direct-ssh PTY programs, or nil.
 A server that advertises `run_command' starts the program through
 `tramp-rpc-server run --': on macOS that runs it in the user's GUI login
 session, where the login keychain is available, and elsewhere it execs the
